@@ -29,32 +29,22 @@ jobs:
       - name: Install EAS CLI
         run: npm install -g eas-cli
 
-      - name: Configure EAS
-        run: eas build:configure --platform android
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Build Android APK (Preview)
-        run: eas build --platform android --profile preview --non-interactive --no-wait
+      - name: Build Android APK (Preview) - Wait for completion
+        run: |
+          BUILD_OUTPUT=$(eas build --platform android --profile preview --non-interactive --wait 2>&1)
+          echo "$BUILD_OUTPUT"
+          BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -o 'build-[a-z0-9]*' | head -1)
+          echo "BUILD_ID=$BUILD_ID" >> $GITHUB_OUTPUT
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         id: build
 
-      - name: Wait for build to complete
-        if: steps.build.outcome == 'success'
-        run: |
-          BUILD_ID=$(echo "${{ steps.build.outputs.stdout }}" | grep -o 'build-[a-z0-9]*' | head -1)
-          if [ -n "$BUILD_ID" ]; then
-            eas build:wait "$BUILD_ID" --timeout 1800
-          fi
-
       - name: Download artifact
-        if: steps.build.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.build.outputs.BUILD_ID != ''
         run: |
-          BUILD_ID=$(echo "${{ steps.build.outputs.stdout }}" | grep -o 'build-[a-z0-9]*' | head -1)
-          if [ -n "$BUILD_ID" ]; then
-            eas build:download "$BUILD_ID" --platform android --output ./app.apk
-          fi
+          eas build:download "${{ steps.build.outputs.BUILD_ID }}" --platform android --output ./app.apk
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Upload APK as Artifact
         if: steps.build.outcome == 'success'
@@ -73,6 +63,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ **Android APK built successfully!**\n\n📥 Download from [Actions Artifacts](${{
-                github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+              body: '✅ **Android APK built successfully!**\n\n📥 Download from [Actions Artifacts](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})'
             })
