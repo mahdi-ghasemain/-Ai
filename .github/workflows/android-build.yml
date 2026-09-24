@@ -1,0 +1,78 @@
+name: Android Build with EAS
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK via EAS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Configure EAS
+        run: eas build:configure --platform android --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build Android APK (Preview)
+        run: eas build --platform android --profile preview --non-interactive --no-wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        id: build
+
+      - name: Wait for build to complete
+        if: steps.build.outcome == 'success'
+        run: |
+          BUILD_ID=$(echo "${{ steps.build.outputs.stdout }}" | grep -o 'build-[a-z0-9]*' | head -1)
+          if [ -n "$BUILD_ID" ]; then
+            eas build:wait "$BUILD_ID" --timeout 1800
+          fi
+
+      - name: Download artifact
+        if: steps.build.outcome == 'success'
+        run: |
+          BUILD_ID=$(echo "${{ steps.build.outputs.stdout }}" | grep -o 'build-[a-z0-9]*' | head -1)
+          if [ -n "$BUILD_ID" ]; then
+            eas build:download "$BUILD_ID" --platform android --output ./app.apk
+          fi
+
+      - name: Upload APK as Artifact
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-preview-apk
+          path: ./app.apk
+          retention-days: 30
+
+      - name: Comment PR with download link
+        if: github.event_name == 'pull_request' && steps.build.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ **Android APK built successfully!**\n\n📥 Download from [Actions Artifacts](${{
+                github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            })
