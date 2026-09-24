@@ -24,6 +24,12 @@
     },
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a0be1b8d-d0a0-4326-a8fa-e5f901ca3058"
+      }
+    },
+    "owner": "mahdi_ghasemian"
   }
 }
