@@ -1,0 +1,29 @@
+services:
+  web:
+    build:
+      context: .
+      args:
+        EXPO_PUBLIC_DEMO_AUTH: ${EXPO_PUBLIC_DEMO_AUTH:-true}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  api:
+    build: ./api
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      JWT_SECRET: ${JWT_SECRET:-}
+      DATABASE_PATH: /data/parsai.db
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      KAVENEGAR_API_KEY: ${KAVENEGAR_API_KEY:-}
+      KAVENEGAR_TEMPLATE: ${KAVENEGAR_TEMPLATE:-parsai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_SEARCH_MODEL: ${OPENAI_SEARCH_MODEL:-}
+    volumes:
+      - parsai_data:/data
+    restart: unless-stopped
+volumes:
+  parsai_data:

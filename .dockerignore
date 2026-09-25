@@ -1,0 +1,15 @@
+node_modules
+.expo
+.git
+.github
+dist*
+.env*
+api
+sources
+*.zip
+*.apk
+*.aab
+**/__pycache__
+**/*.db
+**/*.pem
+**/*.key

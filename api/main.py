@@ -28,6 +28,9 @@ OTP_TTL_SECONDS = 120
 RECOMMENDATION_CACHE_SECONDS = int(os.getenv("RECOMMENDATION_CACHE_SECONDS", "43200"))
 RECOMMENDATION_CACHE: dict[str, tuple[int, dict]] = {}
 
+if APP_ENV == "production" and len(JWT_SECRET) < 32:
+    raise RuntimeError("Production requires a JWT_SECRET of at least 32 characters")
+
 app = FastAPI(title="Pars AI API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -252,7 +255,7 @@ def get_tool(tool_id: str):
 
 
 @app.post("/v1/tools/recommend")
-def recommend_tools(body: ToolRecommendRequest):
+def recommend_tools(body: ToolRecommendRequest, user=Depends(current_user)):
     cache_key = hashlib.sha256(f"{body.language}:{body.limit}:{body.query.strip().lower()}".encode()).hexdigest()
     cached = RECOMMENDATION_CACHE.get(cache_key)
     now = int(time.time())
@@ -336,14 +339,14 @@ def remove_favorite(tool_id: str, user=Depends(current_user)):
 
 
 @app.post("/v1/prompts/generate")
-def generate_prompt(body: PromptRequest):
+def generate_prompt(body: PromptRequest, user=Depends(current_user)):
     instruction = "Return only a polished image-generation prompt in English."
     response = ai_client().responses.create(model=OPENAI_MODEL, instructions=instruction, input=f"Idea: {body.idea}\nStyle: {body.style}\nAspect ratio: {body.ratio}", store=False)
     return {"prompt": response.output_text, "model": OPENAI_MODEL}
 
 
 @app.post("/v1/chat")
-def chat(body: ChatRequest):
+def chat(body: ChatRequest, user=Depends(current_user)):
     language = "Persian" if body.language == "fa" else "English"
     instructions = f"You are Pars AI, an AI-tool matchmaker. Reply in {language}. Recommend at most three appropriate tools and briefly explain why."
     response = ai_client().responses.create(model=OPENAI_MODEL, instructions=instructions, input=body.message, store=False)
