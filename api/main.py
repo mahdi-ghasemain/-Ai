@@ -24,6 +24,8 @@ KAVENEGAR_TEMPLATE = os.getenv("KAVENEGAR_TEMPLATE", "parsai")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_SEARCH_MODEL = os.getenv("OPENAI_SEARCH_MODEL", "gpt-5.5")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+FREE_MONTHLY_QUOTA = int(os.getenv("FREE_MONTHLY_QUOTA", "5"))
 OTP_TTL_SECONDS = 120
 RECOMMENDATION_CACHE_SECONDS = int(os.getenv("RECOMMENDATION_CACHE_SECONDS", "43200"))
 RECOMMENDATION_CACHE: dict[str, tuple[int, dict]] = {}
@@ -68,6 +70,21 @@ def init_db():
             created_at INTEGER NOT NULL,
             PRIMARY KEY(user_id, tool_id)
         );
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            user_id INTEGER PRIMARY KEY,
+            plan TEXT NOT NULL DEFAULT 'free',
+            period TEXT NOT NULL DEFAULT '',
+            used INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS generations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            result TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
         """)
         conn.commit()
 
@@ -111,6 +128,52 @@ class ToolRecommendRequest(BaseModel):
     query: str = Field(min_length=2, max_length=500)
     language: str = Field(default="fa", pattern="^(fa|en)$")
     limit: int = Field(default=5, ge=1, le=8)
+
+
+class ImageRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=1000)
+    size: str = Field(default="1024x1024", pattern="^(1024x1024|1536x1024|1024x1536)$")
+
+
+class VideoBriefRequest(BaseModel):
+    idea: str = Field(min_length=3, max_length=1000)
+    duration: int = Field(default=6, ge=3, le=30)
+    language: str = Field(default="fa", pattern="^(fa|en)$")
+
+
+class CodeAssistRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=8000)
+    task: str = Field(default="review", pattern="^(review|fix|explain)$")
+    language: str = Field(default="fa", pattern="^(fa|en)$")
+
+
+def month_key() -> str:
+    return time.strftime("%Y-%m", time.gmtime())
+
+
+def get_subscription(user_id: int) -> dict:
+    period = month_key()
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
+        if not row or row["period"] != period:
+            conn.execute(
+                "INSERT OR REPLACE INTO subscriptions(user_id,plan,period,used,updated_at) VALUES(?,?,?,0,?)",
+                (user_id, row["plan"] if row else "free", period, int(time.time())),
+            )
+            conn.commit()
+            return {"plan": row["plan"] if row else "free", "period": period, "used": 0, "quota": FREE_MONTHLY_QUOTA}
+        return {"plan": row["plan"], "period": row["period"], "used": row["used"], "quota": FREE_MONTHLY_QUOTA}
+
+
+def consume_quota(user_id: int) -> dict:
+    sub = get_subscription(user_id)
+    if sub["plan"] != "free" or sub["used"] < sub["quota"]:
+        with closing(db()) as conn:
+            conn.execute("UPDATE subscriptions SET used=used+1, updated_at=? WHERE user_id=?", (int(time.time()), user_id))
+            conn.commit()
+        sub["used"] += 1
+        return sub
+    raise HTTPException(402, "Free monthly quota finished. Upgrade to a paid plan to continue.")
 
 
 def normalize_phone(phone: str) -> str:
@@ -351,3 +414,57 @@ def chat(body: ChatRequest, user=Depends(current_user)):
     instructions = f"You are Pars AI, an AI-tool matchmaker. Reply in {language}. Recommend at most three appropriate tools and briefly explain why."
     response = ai_client().responses.create(model=OPENAI_MODEL, instructions=instructions, input=body.message, store=False)
     return {"answer": response.output_text, "model": OPENAI_MODEL}
+
+
+@app.get("/v1/subscription")
+def subscription(user=Depends(current_user)):
+    return get_subscription(user["id"])
+
+
+@app.post("/v1/images/generate")
+def generate_image(body: ImageRequest, user=Depends(current_user)):
+    sub = consume_quota(user["id"])
+    try:
+        result = ai_client().images.generate(model=OPENAI_IMAGE_MODEL, prompt=body.prompt, size=body.size)
+        image = result.data[0]
+        payload = getattr(image, "b64_json", None) or getattr(image, "url", "")
+        kind = "b64" if getattr(image, "b64_json", None) else "url"
+    except Exception as exc:
+        raise HTTPException(502, f"Image service unavailable: {exc}") from exc
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO generations(user_id,kind,prompt,result,created_at) VALUES(?,?,?,?,?)",
+            (user["id"], "image", body.prompt[:1000], (payload or "")[:2000000], int(time.time())),
+        )
+        conn.commit()
+    return {"image": payload, "kind": kind, "model": OPENAI_IMAGE_MODEL, "subscription": sub}
+
+
+@app.post("/v1/videos/brief")
+def video_brief(body: VideoBriefRequest, user=Depends(current_user)):
+    sub = consume_quota(user["id"])
+    language = "Persian" if body.language == "fa" else "English"
+    instructions = f"You are a video director. Reply in {language}. Return a {body.duration}-second shot-by-shot storyboard: shots, camera move, lighting, sound. Keep it practical for Runway/Pika."
+    response = ai_client().responses.create(model=OPENAI_MODEL, instructions=instructions, input=body.idea, store=False)
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO generations(user_id,kind,prompt,result,created_at) VALUES(?,?,?,?,?)",
+            (user["id"], "video-brief", body.idea[:1000], response.output_text[:10000], int(time.time())),
+        )
+        conn.commit()
+    return {"brief": response.output_text, "model": OPENAI_MODEL, "subscription": sub}
+
+
+@app.post("/v1/code/assist")
+def code_assist(body: CodeAssistRequest, user=Depends(current_user)):
+    sub = consume_quota(user["id"])
+    language = "Persian" if body.language == "fa" else "English"
+    instructions = f"You are a senior engineer. Reply in {language}. Task: {body.task}. Be concrete, prioritize by impact, propose minimal fixes with tests."
+    response = ai_client().responses.create(model=OPENAI_MODEL, instructions=instructions, input=body.code, store=False)
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO generations(user_id,kind,prompt,result,created_at) VALUES(?,?,?,?,?)",
+            (user["id"], f"code-{body.task}", body.code[:4000], response.output_text[:10000], int(time.time())),
+        )
+        conn.commit()
+    return {"answer": response.output_text, "model": OPENAI_MODEL, "subscription": sub}
