@@ -1,15 +1,19 @@
+// @ts-check
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
 const TOKEN_KEY = 'parsai_access_token';
 
+/** @param {string} path
+ * @param {RequestInit & {timeoutMs?: number}} options */
 async function call(path, options = {}) {
+  const { timeoutMs = 30000, ...fetchOptions } = options;
   const token = await AsyncStorage.getItem(TOKEN_KEY);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
   const response = await fetch(`${API_URL}${path}`, {
-    ...options,
+    ...fetchOptions,
     signal: controller.signal,
     headers: {
       'Content-Type': 'application/json',
@@ -40,8 +44,12 @@ export const api = {
   },
   generatePrompt: (payload) => call('/v1/prompts/generate', { method: 'POST', body: JSON.stringify(payload) }),
   chat: (message, language) => call('/v1/chat', { method: 'POST', body: JSON.stringify({ message, language }) }),
+  assistant: (message, mode, language, history = []) => call('/v1/assistant', {
+    method: 'POST', timeoutMs: 120000,
+    body: JSON.stringify({ message, mode, language, history }),
+  }),
   subscription: () => call('/v1/subscription'),
-  generateImage: (prompt, size = '1024x1024') => call('/v1/images/generate', { method: 'POST', body: JSON.stringify({ prompt, size }) }),
+  generateImage: (prompt, size = '1024x1024') => call('/v1/images/generate', { method: 'POST', timeoutMs: 120000, body: JSON.stringify({ prompt, size }) }),
   videoBrief: (idea, duration = 6, language = 'fa') => call('/v1/videos/brief', { method: 'POST', body: JSON.stringify({ idea, duration, language }) }),
   codeAssist: (code, task = 'review', language = 'fa') => call('/v1/code/assist', { method: 'POST', body: JSON.stringify({ code, task, language }) }),
   favorites: () => call('/v1/favorites'),
